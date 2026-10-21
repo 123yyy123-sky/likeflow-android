@@ -7,6 +7,7 @@ import argparse
 import json
 import logging
 import os
+import re
 import subprocess
 import sys
 import time
@@ -62,6 +63,11 @@ def parse_args() -> argparse.Namespace:
         "--fast",
         action="store_true",
         help="Reduce UI waits, skip step screenshots, and use fewer template scales.",
+    )
+    parser.add_argument(
+        "--turbo",
+        action="store_true",
+        help="Template-only detection with minimal waits and live progress.",
     )
     parser.add_argument(
         "--artifacts-dir",
@@ -142,7 +148,45 @@ def build_worker_command(
         command.append("--dry-run")
     if args.fast:
         command.append("--fast")
+    if args.turbo:
+        command.append("--turbo")
     return command
+
+
+def run_worker(
+    command: list[str],
+    round_dir: Path,
+    total_clicks: int,
+    target_clicks: int,
+) -> int:
+    """Stream worker output and expose cumulative click progress to the GUI."""
+    process = subprocess.Popen(
+        command,
+        cwd=Path(__file__).resolve().parent,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        bufsize=1,
+    )
+    output: list[str] = []
+    assert process.stdout is not None
+    for line in process.stdout:
+        output.append(line)
+        if "Clicked action " in line:
+            match = re.search(r"Clicked action (\d+)", line)
+            if match:
+                current = total_clicks + int(match.group(1))
+                print(
+                    f"total={current}/{target_clicks}",
+                    flush=True,
+                )
+    return_code = process.wait()
+    (round_dir / "console.log").write_text(
+        "".join(output), encoding="utf-8", errors="replace"
+    )
+    return return_code
 
 
 def main() -> int:
@@ -171,6 +215,8 @@ def main() -> int:
         "serial": args.serial,
         "package": package,
         "dry_run": args.dry_run,
+        "fast": args.fast,
+        "turbo": args.turbo,
         "rounds_requested": args.rounds,
         "per_round": args.per_round,
         "min_total_clicks": args.min_total_clicks,
@@ -196,20 +242,15 @@ def main() -> int:
                 round_number,
                 args.min_total_clicks,
             )
-            completed = subprocess.run(
+            return_code = run_worker(
                 command,
-                cwd=Path(__file__).resolve().parent,
-                text=True,
-                capture_output=True,
-                check=False,
+                round_dir,
+                summary["total_clicks"],
+                args.min_total_clicks,
             )
-            (round_dir / "console.log").write_text(
-                completed.stdout + completed.stderr,
-                encoding="utf-8",
-            )
-            if completed.returncode != 0:
+            if return_code != 0:
                 raise RuntimeError(
-                    f"Round {round_number} exited with code {completed.returncode}"
+                    f"Round {round_number} exited with code {return_code}"
                 )
 
             result_path = find_round_result(round_dir)
@@ -235,6 +276,10 @@ def main() -> int:
                 verified,
                 summary["total_clicks"],
                 args.min_total_clicks,
+            )
+            print(
+                f"total={summary['total_clicks']}/{args.min_total_clicks}",
+                flush=True,
             )
 
             if args.dry_run:

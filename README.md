@@ -18,7 +18,9 @@ emulator that is already open on the target page.
 - Select one or more unliked icon templates and optional liked-state templates.
 - Choose an ADB device and ADB directory.
 - Configure rounds, per-round actions, scroll limits and fast mode.
+- Use turbo mode for template-only detection with minimal waits.
 - Start, stop and monitor a run from the desktop UI.
+- See live cumulative progress and a rolling estimated completion time.
 - Clean generated run artifacts without deleting settings or templates.
 - Save settings between launches.
 - Show real-time progress and logs.
@@ -67,6 +69,10 @@ whether a click changed the control into any supported liked state.
 The default fast template scales and threshold are tuned for the bundled
 examples. If your device resolution or icon scale differs, use the standard mode
 first and adjust the template crop.
+
+**极速** mode skips UI-tree scanning and per-click liked-state verification. It
+is fastest, but depends entirely on the selected image templates, so verify the
+page in detection-only mode before a long run.
 
 ## Build Windows EXE
 

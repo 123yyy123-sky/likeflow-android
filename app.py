@@ -7,6 +7,8 @@ import shutil
 import subprocess
 import sys
 import threading
+import time
+from collections import deque
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 import tkinter as tk
@@ -15,7 +17,7 @@ from PIL import Image, ImageTk
 
 
 APP_NAME = "LikeFlow"
-APP_VERSION = "1.1.0"
+APP_VERSION = "1.2.0"
 CREATE_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 TOTAL_RE = re.compile(r"total=(\d+)/(\d+)")
 RUN_DIR_RE = re.compile(r"^\d{8}_\d{6}$")
@@ -61,6 +63,7 @@ def default_config() -> dict[str, object]:
         "per_round": 100,
         "max_scrolls": 30,
         "fast": True,
+        "turbo": False,
         "dry_run": False,
         "artifacts_dir": str(CONFIG_DIR / "artifacts"),
     }
@@ -192,10 +195,13 @@ class LikeFlowApp(tk.Tk):
         self.per_round_var = tk.StringVar(value=str(config["per_round"]))
         self.scrolls_var = tk.StringVar(value=str(config["max_scrolls"]))
         self.fast_var = tk.BooleanVar(value=bool(config["fast"]))
+        self.turbo_var = tk.BooleanVar(value=bool(config.get("turbo", False)))
         self.dry_run_var = tk.BooleanVar(value=bool(config["dry_run"]))
         self.artifacts_var = tk.StringVar(value=str(config["artifacts_dir"]))
         self.status_var = tk.StringVar(value="等待开始")
         self.progress_var = tk.StringVar(value="0 / 0")
+        self.eta_var = tk.StringVar(value="预计剩余：计算中")
+        self._progress_samples: deque[tuple[float, int]] = deque(maxlen=30)
 
         self._configure_styles()
         self._build_layout()
@@ -665,6 +671,17 @@ class LikeFlowApp(tk.Tk):
         ).pack(side="left")
         tk.Checkbutton(
             mode,
+            text="极速",
+            variable=self.turbo_var,
+            font=("Microsoft YaHei UI", 8),
+            fg=COLORS["ink"],
+            bg=COLORS["panel"],
+            activebackground=COLORS["panel"],
+            selectcolor=COLORS["panel"],
+            cursor="hand2",
+        ).pack(side="left", padx=(5, 0))
+        tk.Checkbutton(
+            mode,
             text="仅检测",
             variable=self.dry_run_var,
             font=("Microsoft YaHei UI", 8),
@@ -749,6 +766,13 @@ class LikeFlowApp(tk.Tk):
             fg=COLORS["accent"],
             bg=COLORS["canvas"],
         ).pack(side="right")
+        tk.Label(
+            progress_head,
+            textvariable=self.eta_var,
+            font=("Microsoft YaHei UI", 8),
+            fg=COLORS["muted"],
+            bg=COLORS["canvas"],
+        ).pack(side="right", padx=(0, 14))
         self.progress = ttk.Progressbar(
             progress_group,
             style="App.Horizontal.TProgressbar",
@@ -996,13 +1020,53 @@ class LikeFlowApp(tk.Tk):
         self.after(0, self._finish_run, return_code)
 
     def _handle_output_line(self, line: str) -> None:
-        self._append_log(line + "\n")
         match = TOTAL_RE.search(line)
         if match:
             current = int(match.group(1))
             target = max(1, int(match.group(2)))
             self.progress.configure(maximum=target, value=min(current, target))
             self.progress_var.set(f"{current} / {target}")
+            self._update_eta(current, target)
+            return
+        self._append_log(line + "\n")
+
+    def _update_eta(self, current: int, target: int) -> None:
+        now = time.monotonic()
+        if not self._progress_samples or current > self._progress_samples[-1][1]:
+            self._progress_samples.append((now, current))
+        if current >= target:
+            self.eta_var.set("预计剩余：0 秒")
+            self._progress_samples.clear()
+            self._progress_samples.append((now, current))
+            return
+        if len(self._progress_samples) < 2:
+            self.eta_var.set("预计剩余：等待首次点击")
+            return
+
+        while (
+            len(self._progress_samples) > 2
+            and now - self._progress_samples[0][0] > 30
+        ):
+            self._progress_samples.popleft()
+        first_time, first_count = self._progress_samples[0]
+        last_time, last_count = self._progress_samples[-1]
+        elapsed = last_time - first_time
+        gained = last_count - first_count
+        if elapsed <= 0 or gained <= 0:
+            self.eta_var.set("预计剩余：计算中")
+            return
+
+        seconds = max(1, round((target - current) * elapsed / gained))
+        if seconds < 60:
+            text = f"预计剩余：约 {seconds} 秒"
+        elif seconds < 3600:
+            minutes, remainder = divmod(seconds, 60)
+            text = f"预计剩余：约 {minutes} 分 {remainder} 秒"
+        else:
+            hours, remainder = divmod(seconds, 3600)
+            minutes = remainder // 60
+            text = f"预计剩余：约 {hours} 小时 {minutes} 分"
+        self.eta_var.set(text)
 
     def _started(self, command: list[str]) -> None:
         self.process = subprocess.Popen(
@@ -1090,6 +1154,8 @@ class LikeFlowApp(tk.Tk):
             worker_args = worker_args[2:]
         if self.fast_var.get():
             worker_args.append("--fast")
+        if self.turbo_var.get():
+            worker_args.append("--turbo")
         if self.dry_run_var.get():
             worker_args.append("--dry-run")
 
@@ -1106,13 +1172,16 @@ class LikeFlowApp(tk.Tk):
         self.clear_log()
         self.progress.configure(maximum=max(1, total), value=0)
         self.progress_var.set(f"0 / {total}")
+        self.eta_var.set("预计剩余：计算中")
+        self._progress_samples.clear()
+        self._progress_samples.append((time.monotonic(), 0))
         self._set_running(True)
         action = "检测" if self.dry_run_var.get() else "执行"
         self._set_status(f"正在{action}", COLORS["accent"])
         self._append_log(
             f"启动任务：目标 {total} 次，未点赞图型 {len(unliked)} 张，"
             f"已点赞图型 {len(liked)} 张，每轮上限 {per_round}，"
-            f"{'快速模式' if self.fast_var.get() else '标准模式'}\n"
+            f"{self._mode_label()}\n"
         )
         self._started(command)
 
@@ -1137,12 +1206,18 @@ class LikeFlowApp(tk.Tk):
     def _finish_run(self, return_code: int) -> None:
         self._set_running(False)
         if return_code == 0:
+            if self.progress.cget("value") >= self.progress.cget("maximum"):
+                self.eta_var.set("预计剩余：已完成")
+            else:
+                self.eta_var.set("预计剩余：暂无")
             self._set_status("任务完成", COLORS["success"])
             self._append_log("\n任务完成。\n")
         elif return_code == 3:
+            self.eta_var.set("预计剩余：未达到目标")
             self._set_status("未达到目标", COLORS["coral"])
             self._append_log("\n任务结束，但未达到设定数量。\n")
         else:
+            self.eta_var.set("预计剩余：已停止")
             self._set_status("任务已停止", COLORS["coral"])
             self._append_log(f"\n任务退出，代码：{return_code}\n")
         self.process = None
@@ -1249,6 +1324,13 @@ class LikeFlowApp(tk.Tk):
             value /= 1024
         return f"{value:.1f} GB"
 
+    def _mode_label(self) -> str:
+        if self.turbo_var.get():
+            return "极速模式（仅图片识别）"
+        if self.fast_var.get():
+            return "快速模式"
+        return "标准模式"
+
     def _positive_int(self, value: str, label: str) -> int:
         try:
             number = int(value)
@@ -1270,6 +1352,7 @@ class LikeFlowApp(tk.Tk):
             "per_round": self.per_round_var.get(),
             "max_scrolls": self.scrolls_var.get(),
             "fast": self.fast_var.get(),
+            "turbo": self.turbo_var.get(),
             "dry_run": self.dry_run_var.get(),
             "artifacts_dir": self.artifacts_var.get(),
         }

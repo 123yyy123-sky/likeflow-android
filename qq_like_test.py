@@ -141,6 +141,11 @@ def parse_args() -> argparse.Namespace:
         help="Reduce UI waits and skip step screenshots; verification stays enabled.",
     )
     parser.add_argument(
+        "--turbo",
+        action="store_true",
+        help="Template-only detection with minimal waits and no per-click verification.",
+    )
+    parser.add_argument(
         "--capture-screen",
         action="store_true",
         help="Save the current screen and exit. Does not tap anything.",
@@ -165,6 +170,8 @@ def parse_args() -> argparse.Namespace:
         parser.error("--max-scrolls must be between 1 and 100")
     if not 0 <= args.template_threshold <= 1:
         parser.error("--template-threshold must be between 0 and 1")
+    if args.turbo and not args.template:
+        parser.error("--turbo requires at least one --template")
     for template in args.template or []:
         if not template.is_file():
             parser.error(f"template does not exist: {template}")
@@ -402,8 +409,13 @@ def collect_candidates(
     template_paths: Sequence[Path] | None,
     template_threshold: float,
     template_scales: Sequence[float] = TEMPLATE_SCALES,
+    include_ui: bool = True,
 ) -> list[Candidate]:
-    candidates = ui_candidates(device.dump_hierarchy(compressed=False), frame)
+    candidates = (
+        ui_candidates(device.dump_hierarchy(compressed=False), frame)
+        if include_ui
+        else []
+    )
     for template_path in template_paths or []:
         candidates.extend(
             template_candidates(
@@ -484,6 +496,8 @@ def main() -> int:
         "serial": args.serial,
         "package": package,
         "dry_run": args.dry_run,
+        "fast": args.fast,
+        "turbo": args.turbo,
         "clicks": 0,
         "likes_verified": 0,
         "detections": 0,
@@ -494,18 +508,21 @@ def main() -> int:
     seen: list[tuple[bool, ...]] = []
     stop_reason = "max_actions"
     no_motion_count = 0
-    template_scales = FAST_TEMPLATE_SCALES if args.fast else TEMPLATE_SCALES
+    effective_fast = args.fast or args.turbo
+    template_scales = FAST_TEMPLATE_SCALES if effective_fast else TEMPLATE_SCALES
     template_threshold = (
         min(args.template_threshold, FAST_TEMPLATE_THRESHOLD)
-        if args.fast
+        if effective_fast
         else args.template_threshold
     )
     signature_max_distance = (
-        FAST_SIGNATURE_MAX_DISTANCE if args.fast else 10
+        FAST_SIGNATURE_MAX_DISTANCE if effective_fast else 10
     )
-    click_delay = 0.3 if args.fast else 0.55
-    scroll_delay = 0.4 if args.fast else 0.8
-    save_step_images = not args.fast
+    click_delay = 0.12 if args.turbo else 0.3 if args.fast else 0.55
+    scroll_delay = 0.25 if args.turbo else 0.4 if args.fast else 0.8
+    save_step_images = not effective_fast
+    if args.turbo:
+        log.info("Turbo mode: template-only detection, no per-click verification")
 
     try:
         for scroll_index in range(args.max_scrolls + 1):
@@ -518,6 +535,7 @@ def main() -> int:
                     args.template,
                     template_threshold,
                     template_scales=template_scales,
+                    include_ui=not args.turbo,
                 )
                 fresh = [
                     candidate
@@ -561,10 +579,16 @@ def main() -> int:
                     device.click(*candidate.center)
                     time.sleep(click_delay)
                     result["clicks"] += 1
-                    after_frame = screenshot_rgb(device)
-                    if save_step_images:
-                        save_screenshot(after_frame, artifacts / f"{stem}_after.png")
-                    if args.liked_template:
+                    after_frame = None
+                    if save_step_images or (
+                        args.liked_template and not args.turbo
+                    ):
+                        after_frame = screenshot_rgb(device)
+                        if save_step_images:
+                            save_screenshot(
+                                after_frame, artifacts / f"{stem}_after.png"
+                            )
+                    if args.liked_template and not args.turbo:
                         liked_matches = [
                             match
                             for template in args.liked_template

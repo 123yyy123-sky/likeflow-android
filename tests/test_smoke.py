@@ -86,6 +86,25 @@ class LikeFlowSmokeTests(unittest.TestCase):
             ["one.png", "two.png"],
         )
 
+    def test_turbo_is_forwarded_to_worker(self) -> None:
+        original = sys.argv
+        try:
+            sys.argv = [
+                "batch_test.py",
+                "--template",
+                str(ROOT / "templates" / "unliked_heart.png"),
+                "--turbo",
+            ]
+            args = batch_test.parse_args()
+            command = batch_test.build_worker_command(
+                args,
+                ROOT / "artifacts" / "test-round",
+                frozen=False,
+            )
+            self.assertIn("--turbo", command)
+        finally:
+            sys.argv = original
+
     def test_frozen_worker_uses_executable_worker_mode(self) -> None:
         original = sys.argv
         try:
