@@ -35,11 +35,18 @@ def parse_args() -> argparse.Namespace:
         default="com.tencent.mobileqq",
         help="Foreground package prefix passed to the worker.",
     )
-    parser.add_argument("--template", type=Path, required=True)
+    parser.add_argument(
+        "--template",
+        type=Path,
+        action="append",
+        required=True,
+        help="Unliked icon template. Repeat to match multiple templates.",
+    )
     parser.add_argument(
         "--liked-template",
         type=Path,
-        help="Optional liked-state icon used to verify clicks.",
+        action="append",
+        help="Optional liked-state icon. Repeat to verify multiple templates.",
     )
     parser.add_argument("--rounds", type=int, default=5)
     parser.add_argument("--per-round", type=int, default=10)
@@ -71,12 +78,12 @@ def parse_args() -> argparse.Namespace:
         parser.error("--min-total-clicks must be at least 1")
     if not 1 <= args.max_scrolls_per_round <= 50:
         parser.error("--max-scrolls-per-round must be between 1 and 50")
-    for label, path in (
-        ("template", args.template),
-        ("liked template", args.liked_template),
-    ):
-        if path is not None and not path.is_file():
-            parser.error(f"{label} does not exist: {path}")
+    for template in args.template:
+        if not template.is_file():
+            parser.error(f"template does not exist: {template}")
+    for template in args.liked_template or []:
+        if not template.is_file():
+            parser.error(f"liked template does not exist: {template}")
     return args
 
 
@@ -116,10 +123,12 @@ def build_worker_command(
         command.extend(["--serial", args.serial])
     if args.package_prefix:
         command.extend(["--package-prefix", args.package_prefix])
+    for template in args.template:
+        command.extend(["--template", str(template.resolve())])
+    for template in args.liked_template or []:
+        command.extend(["--liked-template", str(template.resolve())])
     command.extend(
         [
-            "--template",
-            str(args.template.resolve()),
             "--max-actions",
             str(args.per_round),
             "--max-scrolls",
@@ -129,13 +138,6 @@ def build_worker_command(
             str(round_dir.resolve()),
         ]
     )
-    if args.liked_template is not None:
-        command.extend(
-            [
-                "--liked-template",
-                str(args.liked_template.resolve()),
-            ]
-        )
     if args.dry_run:
         command.append("--dry-run")
     if args.fast:

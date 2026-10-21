@@ -15,7 +15,7 @@ from PIL import Image, ImageTk
 
 
 APP_NAME = "LikeFlow"
-APP_VERSION = "1.0.1"
+APP_VERSION = "1.1.0"
 CREATE_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 TOTAL_RE = re.compile(r"total=(\d+)/(\d+)")
 RUN_DIR_RE = re.compile(r"^\d{8}_\d{6}$")
@@ -54,8 +54,8 @@ def default_config() -> dict[str, object]:
         "serial": "",
         "adb_dir": r"F:\模拟器\LDPlayer14",
         "package_prefix": "com.tencent.mobileqq",
-        "unliked_template": str(BASE_DIR / "templates" / "unliked_heart.png"),
-        "liked_template": str(BASE_DIR / "templates" / "liked_heart.png"),
+        "unliked_templates": [str(BASE_DIR / "templates" / "unliked_heart.png")],
+        "liked_templates": [str(BASE_DIR / "templates" / "liked_heart.png")],
         "total_likes": 1450,
         "rounds": 5,
         "per_round": 100,
@@ -75,6 +75,24 @@ def load_config() -> dict[str, object]:
     except (OSError, ValueError):
         pass
     return config
+
+
+def config_templates(
+    config: dict[str, object],
+    key: str,
+    legacy_key: str,
+) -> list[str]:
+    """Read a template list while accepting the v1.0 scalar format."""
+    value = config.get(key)
+    if isinstance(value, list):
+        return [str(item) for item in value if str(item).strip()]
+    if isinstance(value, str) and value.strip():
+        return [value]
+
+    legacy = config.get(legacy_key)
+    if isinstance(legacy, str) and legacy.strip():
+        return [legacy]
+    return []
 
 
 def adb_executable(path_value: str) -> Path | None:
@@ -157,14 +175,18 @@ class LikeFlowApp(tk.Tk):
 
         self.process: subprocess.Popen[str] | None = None
         self.reader_thread: threading.Thread | None = None
-        self.unliked_photo: ImageTk.PhotoImage | None = None
-        self.liked_photo: ImageTk.PhotoImage | None = None
+        self.unliked_photos: list[ImageTk.PhotoImage] = []
+        self.liked_photos: list[ImageTk.PhotoImage] = []
 
         self.serial_var = tk.StringVar(value=str(config["serial"]))
         self.adb_var = tk.StringVar(value=str(config["adb_dir"]))
         self.package_var = tk.StringVar(value=str(config["package_prefix"]))
-        self.unliked_var = tk.StringVar(value=str(config["unliked_template"]))
-        self.liked_var = tk.StringVar(value=str(config["liked_template"]))
+        self.unliked_paths = config_templates(
+            config, "unliked_templates", "unliked_template"
+        )
+        self.liked_paths = config_templates(
+            config, "liked_templates", "liked_template"
+        )
         self.total_var = tk.StringVar(value=str(config["total_likes"]))
         self.rounds_var = tk.StringVar(value=str(config["rounds"]))
         self.per_round_var = tk.StringVar(value=str(config["per_round"]))
@@ -527,13 +549,23 @@ class LikeFlowApp(tk.Tk):
 
         left = tk.Frame(previews, bg=COLORS["panel_alt"], padx=8, pady=7)
         left.pack(side="left", padx=(0, 6))
+        left_head = tk.Frame(left, bg=COLORS["panel_alt"])
+        left_head.pack(fill="x")
         tk.Label(
-            left,
-            text="未点赞 · 必选",
+            left_head,
+            text="未点赞 · 可多选",
             font=("Microsoft YaHei UI", 7, "bold"),
             fg=COLORS["muted"],
             bg=COLORS["panel_alt"],
-        ).pack()
+        ).pack(side="left")
+        self.unliked_count = tk.Label(
+            left_head,
+            text="0 张",
+            font=("Microsoft YaHei UI", 7),
+            fg=COLORS["accent"],
+            bg=COLORS["panel_alt"],
+        )
+        self.unliked_count.pack(side="right")
         self.unliked_preview = tk.Label(
             left,
             text="PNG / JPG",
@@ -544,24 +576,40 @@ class LikeFlowApp(tk.Tk):
             bg=COLORS["panel_alt"],
         )
         self.unliked_preview.pack(pady=3)
+        unliked_buttons = tk.Frame(left, bg=COLORS["panel_alt"])
+        unliked_buttons.pack(fill="x")
         self._button(
-            left,
-            "选择",
-            lambda: self._browse_image(
-                self.unliked_var, self.unliked_preview, "unliked"
-            ),
-            width=5,
-        ).pack(fill="x")
+            unliked_buttons,
+            "添加",
+            lambda: self._add_images("unliked"),
+            width=4,
+        ).pack(side="left", fill="x", expand=True)
+        self._button(
+            unliked_buttons,
+            "移除",
+            lambda: self._remove_image("unliked"),
+            width=4,
+        ).pack(side="left", fill="x", expand=True, padx=(4, 0))
 
         right = tk.Frame(previews, bg=COLORS["panel_alt"], padx=8, pady=7)
         right.pack(side="left")
+        right_head = tk.Frame(right, bg=COLORS["panel_alt"])
+        right_head.pack(fill="x")
         tk.Label(
-            right,
-            text="已点赞 · 可选",
+            right_head,
+            text="已点赞 · 可多选",
             font=("Microsoft YaHei UI", 7, "bold"),
             fg=COLORS["muted"],
             bg=COLORS["panel_alt"],
-        ).pack()
+        ).pack(side="left")
+        self.liked_count = tk.Label(
+            right_head,
+            text="0 张",
+            font=("Microsoft YaHei UI", 7),
+            fg=COLORS["accent"],
+            bg=COLORS["panel_alt"],
+        )
+        self.liked_count.pack(side="right")
         self.liked_preview = tk.Label(
             right,
             text="状态验证",
@@ -572,14 +620,20 @@ class LikeFlowApp(tk.Tk):
             bg=COLORS["panel_alt"],
         )
         self.liked_preview.pack(pady=3)
+        liked_buttons = tk.Frame(right, bg=COLORS["panel_alt"])
+        liked_buttons.pack(fill="x")
         self._button(
-            right,
-            "选择",
-            lambda: self._browse_image(
-                self.liked_var, self.liked_preview, "liked"
-            ),
-            width=5,
-        ).pack(fill="x")
+            liked_buttons,
+            "添加",
+            lambda: self._add_images("liked"),
+            width=4,
+        ).pack(side="left", fill="x", expand=True)
+        self._button(
+            liked_buttons,
+            "移除",
+            lambda: self._remove_image("liked"),
+            width=4,
+        ).pack(side="left", fill="x", expand=True, padx=(4, 0))
 
         params = tk.Frame(template_row, bg=COLORS["panel"])
         params.pack(side="left", fill="x", expand=True, padx=(16, 0))
@@ -749,42 +803,150 @@ class LikeFlowApp(tk.Tk):
         self.log_text.pack(side="left", fill="both", expand=True)
         scrollbar.pack(side="right", fill="y")
 
-    def _set_preview(self, label: tk.Label, path_value: str, kind: str) -> None:
-        path = Path(path_value)
-        if not path.is_file():
-            label.configure(text="未选择文件", image="")
+    def _template_state(
+        self, kind: str
+    ) -> tuple[list[str], tk.Label, tk.Label, list[ImageTk.PhotoImage]]:
+        if kind == "unliked":
+            return (
+                self.unliked_paths,
+                self.unliked_preview,
+                self.unliked_count,
+                self.unliked_photos,
+            )
+        return (
+            self.liked_paths,
+            self.liked_preview,
+            self.liked_count,
+            self.liked_photos,
+        )
+
+    def _set_preview(self, kind: str) -> None:
+        paths, label, count, photos = self._template_state(kind)
+        photos.clear()
+        count.configure(text=f"{len(paths)} 张")
+        if not paths:
+            label.configure(
+                text="PNG / JPG" if kind == "unliked" else "状态验证",
+                image="",
+                width=9,
+                height=3,
+            )
             return
         try:
-            image = Image.open(path).convert("RGB")
+            image = Image.open(paths[0]).convert("RGB")
             image.thumbnail((64, 64), Image.Resampling.LANCZOS)
             photo = ImageTk.PhotoImage(image)
-            label.configure(image=photo, text="", width=64, height=64)
-            if kind == "unliked":
-                self.unliked_photo = photo
-            else:
-                self.liked_photo = photo
+            photos.append(photo)
+            suffix = f"\n+{len(paths) - 1}" if len(paths) > 1 else ""
+            label.configure(
+                image=photo,
+                text=suffix,
+                compound="center",
+                width=64,
+                height=64,
+                fg="white",
+            )
         except OSError:
-            label.configure(text="无法预览", image="")
+            label.configure(text="无法预览", image="", width=9, height=3)
 
     def _load_previews(self) -> None:
-        self._set_preview(
-            self.unliked_preview, self.unliked_var.get(), "unliked"
-        )
-        self._set_preview(self.liked_preview, self.liked_var.get(), "liked")
+        self._set_preview("unliked")
+        self._set_preview("liked")
 
-    def _browse_image(
-        self, variable: tk.StringVar, label: tk.Label, kind: str
-    ) -> None:
-        path = filedialog.askopenfilename(
-            title="选择点赞图型",
+    def _add_images(self, kind: str) -> None:
+        paths, _, _, _ = self._template_state(kind)
+        selected = filedialog.askopenfilenames(
+            title="选择点赞图型（可多选）",
             filetypes=(
                 ("图片文件", "*.png *.jpg *.jpeg *.bmp *.webp"),
                 ("所有文件", "*.*"),
             ),
         )
-        if path:
-            variable.set(path)
-            self._set_preview(label, path, kind)
+        if not selected:
+            return
+        existing = {os.path.normcase(os.path.abspath(path)) for path in paths}
+        added = 0
+        for path in selected:
+            key = os.path.normcase(os.path.abspath(path))
+            if key not in existing:
+                paths.append(path)
+                existing.add(key)
+                added += 1
+        self._set_preview(kind)
+        self._append_log(
+            f"图型已添加 {added} 张，"
+            f"当前{'未点赞' if kind == 'unliked' else '已点赞'}图型 {len(paths)} 张。\n"
+        )
+
+    def _remove_image(self, kind: str) -> None:
+        paths, _, _, _ = self._template_state(kind)
+        if not paths:
+            messagebox.showinfo("移除图型", "当前没有可移除的图型。", parent=self)
+            return
+
+        dialog = tk.Toplevel(self)
+        dialog.title("移除点赞图型")
+        dialog.configure(bg=COLORS["panel"])
+        dialog.transient(self)
+        dialog.resizable(False, False)
+        tk.Label(
+            dialog,
+            text="选择要移除的图型：",
+            font=("Microsoft YaHei UI", 9, "bold"),
+            fg=COLORS["ink"],
+            bg=COLORS["panel"],
+        ).pack(anchor="w", padx=16, pady=(14, 7))
+        listbox = tk.Listbox(
+            dialog,
+            width=62,
+            height=min(8, max(3, len(paths))),
+            font=("Microsoft YaHei UI", 8),
+            fg=COLORS["ink"],
+            bg=COLORS["panel_alt"],
+            selectbackground=COLORS["accent"],
+            selectforeground="white",
+            relief="flat",
+            activestyle="none",
+        )
+        for path in paths:
+            listbox.insert("end", Path(path).name)
+        listbox.selection_set(0)
+        listbox.pack(fill="both", expand=True, padx=16)
+
+        buttons = tk.Frame(dialog, bg=COLORS["panel"])
+        buttons.pack(fill="x", padx=16, pady=12)
+
+        def remove_selected() -> None:
+            selection = listbox.curselection()
+            if not selection:
+                return
+            index = selection[0]
+            removed_name = Path(paths[index]).name
+            del paths[index]
+            dialog.destroy()
+            self._set_preview(kind)
+            self._append_log(f"已移除图型：{removed_name}\n")
+
+        self._button(
+            buttons,
+            "移除",
+            remove_selected,
+            danger=True,
+            width=8,
+        ).pack(side="right")
+        self._button(
+            buttons,
+            "取消",
+            dialog.destroy,
+            width=8,
+        ).pack(side="right", padx=(0, 8))
+        dialog.bind("<Return>", lambda _event: remove_selected())
+        dialog.bind("<Escape>", lambda _event: dialog.destroy())
+        dialog.update_idletasks()
+        x = self.winfo_rootx() + (self.winfo_width() - dialog.winfo_width()) // 2
+        y = self.winfo_rooty() + (self.winfo_height() - dialog.winfo_height()) // 2
+        dialog.geometry(f"+{max(0, x)}+{max(0, y)}")
+        dialog.grab_set()
 
     def _browse_directory(self, variable: tk.StringVar) -> None:
         path = filedialog.askdirectory(title="选择 ADB 所在目录")
@@ -877,13 +1039,22 @@ class LikeFlowApp(tk.Tk):
             messagebox.showerror("参数错误", "滑屏上限不能超过 50。", parent=self)
             return
 
-        template = Path(self.unliked_var.get())
-        liked = Path(self.liked_var.get()) if self.liked_var.get().strip() else None
-        if not template.is_file():
-            messagebox.showerror("图型错误", "请选择有效的未点赞图型。", parent=self)
+        unliked = [Path(path) for path in self.unliked_paths]
+        liked = [Path(path) for path in self.liked_paths]
+        if not unliked:
+            messagebox.showerror(
+                "图型错误",
+                "请至少添加一张未点赞图型。",
+                parent=self,
+            )
             return
-        if liked is not None and not liked.is_file():
-            messagebox.showerror("图型错误", "已点赞图型路径不存在。", parent=self)
+        missing = [path for path in [*unliked, *liked] if not path.is_file()]
+        if missing:
+            messagebox.showerror(
+                "图型错误",
+                f"以下图型文件不存在：\n{missing[0]}",
+                parent=self,
+            )
             return
         if adb_executable(self.adb_var.get()) is None:
             messagebox.showerror("ADB 错误", "未找到 adb，请选择正确目录。", parent=self)
@@ -900,8 +1071,6 @@ class LikeFlowApp(tk.Tk):
             self.adb_var.get().strip(),
             "--package-prefix",
             self.package_var.get().strip(),
-            "--template",
-            str(template.resolve()),
             "--rounds",
             str(rounds),
             "--per-round",
@@ -913,10 +1082,12 @@ class LikeFlowApp(tk.Tk):
             "--artifacts-dir",
             str(artifacts.resolve()),
         ]
+        for path in unliked:
+            worker_args.extend(["--template", str(path.resolve())])
+        for path in liked:
+            worker_args.extend(["--liked-template", str(path.resolve())])
         if not worker_args[1]:
             worker_args = worker_args[2:]
-        if liked is not None:
-            worker_args.extend(["--liked-template", str(liked.resolve())])
         if self.fast_var.get():
             worker_args.append("--fast")
         if self.dry_run_var.get():
@@ -939,7 +1110,8 @@ class LikeFlowApp(tk.Tk):
         action = "检测" if self.dry_run_var.get() else "执行"
         self._set_status(f"正在{action}", COLORS["accent"])
         self._append_log(
-            f"启动任务：目标 {total} 次，每轮上限 {per_round}，"
+            f"启动任务：目标 {total} 次，未点赞图型 {len(unliked)} 张，"
+            f"已点赞图型 {len(liked)} 张，每轮上限 {per_round}，"
             f"{'快速模式' if self.fast_var.get() else '标准模式'}\n"
         )
         self._started(command)
@@ -1091,8 +1263,8 @@ class LikeFlowApp(tk.Tk):
             "serial": self.serial_var.get(),
             "adb_dir": self.adb_var.get(),
             "package_prefix": self.package_var.get(),
-            "unliked_template": self.unliked_var.get(),
-            "liked_template": self.liked_var.get(),
+            "unliked_templates": self.unliked_paths,
+            "liked_templates": self.liked_paths,
             "total_likes": self.total_var.get(),
             "rounds": self.rounds_var.get(),
             "per_round": self.per_round_var.get(),

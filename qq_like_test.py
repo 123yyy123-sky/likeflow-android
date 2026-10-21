@@ -93,12 +93,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--template",
         type=Path,
-        help="Crop of the unliked icon. Used when the UI tree exposes no label.",
+        action="append",
+        help="Crop of an unliked icon. Repeat to match multiple templates.",
     )
     parser.add_argument(
         "--liked-template",
         type=Path,
-        help="Optional crop of the liked icon, used to verify each click.",
+        action="append",
+        help="Optional liked-state icon. Repeat to verify against multiple templates.",
     )
     parser.add_argument(
         "--template-threshold",
@@ -163,10 +165,12 @@ def parse_args() -> argparse.Namespace:
         parser.error("--max-scrolls must be between 1 and 100")
     if not 0 <= args.template_threshold <= 1:
         parser.error("--template-threshold must be between 0 and 1")
-    if args.template and not args.template.is_file():
-        parser.error(f"template does not exist: {args.template}")
-    if args.liked_template and not args.liked_template.is_file():
-        parser.error(f"liked template does not exist: {args.liked_template}")
+    for template in args.template or []:
+        if not template.is_file():
+            parser.error(f"template does not exist: {template}")
+    for template in args.liked_template or []:
+        if not template.is_file():
+            parser.error(f"liked template does not exist: {template}")
     return args
 
 
@@ -300,7 +304,7 @@ def template_candidates(
             y1=y,
             x2=x + box_width,
             y2=y + box_height,
-            label="template",
+            label=f"template:{template_path.name}",
             source="template",
             score=score,
         )
@@ -395,12 +399,12 @@ def deduplicate(candidates: Iterable[Candidate], min_distance: int) -> list[Cand
 def collect_candidates(
     device: u2.Device,
     frame: Image.Image,
-    template_path: Path | None,
+    template_paths: Sequence[Path] | None,
     template_threshold: float,
     template_scales: Sequence[float] = TEMPLATE_SCALES,
 ) -> list[Candidate]:
     candidates = ui_candidates(device.dump_hierarchy(compressed=False), frame)
-    if template_path is not None:
+    for template_path in template_paths or []:
         candidates.extend(
             template_candidates(
                 frame,
@@ -464,12 +468,16 @@ def main() -> int:
             log.error("Expected test page marker not found: %r", args.expected_text)
             return 3
 
-    if args.template is None:
+    if not args.template:
         log.warning(
             "No --template supplied. Only controls exposed in the UI tree can be found."
         )
     else:
-        log.info("Template fallback enabled: %s", args.template.resolve())
+        log.info(
+            "Template fallback enabled (%d): %s",
+            len(args.template),
+            ", ".join(str(path.resolve()) for path in args.template),
+        )
 
     result = {
         "started_at": datetime.now().isoformat(timespec="seconds"),
@@ -556,13 +564,17 @@ def main() -> int:
                     after_frame = screenshot_rgb(device)
                     if save_step_images:
                         save_screenshot(after_frame, artifacts / f"{stem}_after.png")
-                    if args.liked_template is not None:
-                        liked_matches = template_candidates(
-                            after_frame,
-                            args.liked_template,
-                            template_threshold,
-                            scales=template_scales,
-                        )
+                    if args.liked_template:
+                        liked_matches = [
+                            match
+                            for template in args.liked_template
+                            for match in template_candidates(
+                                after_frame,
+                                template,
+                                template_threshold,
+                                scales=template_scales,
+                            )
+                        ]
                         verified = any(
                             abs(match.center[0] - candidate.center[0]) <= 35
                             and abs(match.center[1] - candidate.center[1]) <= 35

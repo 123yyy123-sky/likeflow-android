@@ -37,8 +37,54 @@ class LikeFlowSmokeTests(unittest.TestCase):
             ]
             args = batch_test.parse_args()
             self.assertIsNone(args.liked_template)
+            self.assertEqual(len(args.template), 1)
         finally:
             sys.argv = original
+
+    def test_batch_accepts_multiple_templates(self) -> None:
+        original = sys.argv
+        try:
+            template = str(ROOT / "templates" / "unliked_heart.png")
+            liked = str(ROOT / "templates" / "liked_heart.png")
+            sys.argv = [
+                "batch_test.py",
+                "--template",
+                template,
+                "--template",
+                template,
+                "--liked-template",
+                liked,
+                "--liked-template",
+                liked,
+            ]
+            args = batch_test.parse_args()
+            command = batch_test.build_worker_command(
+                args,
+                ROOT / "artifacts" / "test-round",
+                frozen=False,
+            )
+            self.assertEqual(command.count("--template"), 2)
+            self.assertEqual(command.count("--liked-template"), 2)
+        finally:
+            sys.argv = original
+
+    def test_config_accepts_legacy_template_strings(self) -> None:
+        self.assertEqual(
+            app.config_templates(
+                {"unliked_template": "legacy.png"},
+                "unliked_templates",
+                "unliked_template",
+            ),
+            ["legacy.png"],
+        )
+        self.assertEqual(
+            app.config_templates(
+                {"unliked_templates": ["one.png", "", "two.png"]},
+                "unliked_templates",
+                "unliked_template",
+            ),
+            ["one.png", "two.png"],
+        )
 
     def test_frozen_worker_uses_executable_worker_mode(self) -> None:
         original = sys.argv

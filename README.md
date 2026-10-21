@@ -15,7 +15,7 @@ emulator that is already open on the target page.
 ## Features
 
 - Configure the total number of likes.
-- Select the unliked icon template and an optional liked-state template.
+- Select one or more unliked icon templates and optional liked-state templates.
 - Choose an ADB device and ADB directory.
 - Configure rounds, per-round actions, scroll limits and fast mode.
 - Start, stop and monitor a run from the desktop UI.
@@ -56,9 +56,13 @@ Capture a screen:
 python qq_like_test.py --serial emulator-5554 --capture-screen
 ```
 
-Crop a tight image of the unliked icon and select it as **未点赞图型**. The liked
-template is optional and is only used to verify whether a click changed the
-control state.
+Crop tight images of the unliked icons and add them under **未点赞图型** with
+**添加**. Multiple images can be selected at once, and **移除** opens a list for
+removing individual entries. Every template is matched against each frame and
+the detections are merged.
+
+The liked templates are optional. Multiple liked images can be used to verify
+whether a click changed the control into any supported liked state.
 
 The default fast template scales and threshold are tuned for the bundled
 examples. If your device resolution or icon scale differs, use the standard mode
@@ -90,6 +94,7 @@ python batch_test.py `
   --serial emulator-5554 `
   --adb-dir "F:\模拟器\LDPlayer14" `
   --template templates\unliked_heart.png `
+  --template path\to\another_unliked.png `
   --liked-template templates\liked_heart.png `
   --rounds 5 `
   --per-round 100 `
