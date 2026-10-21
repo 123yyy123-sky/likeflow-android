@@ -15,9 +15,10 @@ from PIL import Image, ImageTk
 
 
 APP_NAME = "LikeFlow"
-APP_VERSION = "1.0.0"
+APP_VERSION = "1.0.1"
 CREATE_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 TOTAL_RE = re.compile(r"total=(\d+)/(\d+)")
+RUN_DIR_RE = re.compile(r"^\d{8}_\d{6}$")
 
 COLORS = {
     "canvas": "#F3EEE5",
@@ -87,6 +88,47 @@ def adb_executable(path_value: str) -> Path | None:
             return candidate
     found = shutil.which("adb")
     return Path(found) if found else None
+
+
+def directory_size(path: Path) -> int:
+    total = 0
+    try:
+        for item in path.rglob("*"):
+            if item.is_file():
+                try:
+                    total += item.stat().st_size
+                except OSError:
+                    pass
+    except OSError:
+        pass
+    return total
+
+
+def cleanup_artifacts(root: Path) -> tuple[int, int, int]:
+    """Delete generated batch directories, preserving unrelated files."""
+    if not root.is_dir():
+        return 0, 0, 0
+
+    removed = 0
+    skipped = 0
+    freed_bytes = 0
+    for entry in root.iterdir():
+        if (
+            entry.is_symlink()
+            or not entry.is_dir()
+            or not RUN_DIR_RE.fullmatch(entry.name)
+        ):
+            skipped += 1
+            continue
+        size = directory_size(entry)
+        try:
+            shutil.rmtree(entry)
+        except OSError:
+            skipped += 1
+            continue
+        removed += 1
+        freed_bytes += size
+    return removed, skipped, freed_bytes
 
 
 class LikeFlowApp(tk.Tk):
@@ -627,6 +669,13 @@ class LikeFlowApp(tk.Tk):
             self.open_artifacts,
             width=12,
         ).pack(side="left", padx=(9, 0))
+        self.clean_button = self._button(
+            actions,
+            "清理缓存",
+            self.clean_artifacts,
+            width=10,
+        )
+        self.clean_button.pack(side="left", padx=(9, 0))
 
         progress_group = tk.Frame(actions, bg=COLORS["canvas"])
         progress_group.pack(side="right", fill="x", expand=True, padx=(24, 0))
@@ -929,6 +978,7 @@ class LikeFlowApp(tk.Tk):
     def _set_running(self, running: bool) -> None:
         self.start_button.configure(state="disabled" if running else "normal")
         self.stop_button.configure(state="normal" if running else "disabled")
+        self.clean_button.configure(state="disabled" if running else "normal")
 
     def _set_status(self, text: str, color: str) -> None:
         self.status_var.set(text)
@@ -953,6 +1003,79 @@ class LikeFlowApp(tk.Tk):
             os.startfile(path)
         else:
             subprocess.Popen(["xdg-open", str(path)])
+
+    def clean_artifacts(self) -> None:
+        if self.process is not None and self.process.poll() is None:
+            messagebox.showwarning(
+                "任务运行中",
+                "请先停止任务，再清理缓存。",
+                parent=self,
+            )
+            return
+
+        root = Path(self.artifacts_var.get()).expanduser()
+        run_dirs = (
+            [
+                entry
+                for entry in root.iterdir()
+                if not entry.is_symlink()
+                and entry.is_dir()
+                and RUN_DIR_RE.fullmatch(entry.name)
+            ]
+            if root.is_dir()
+            else []
+        )
+        if not run_dirs:
+            messagebox.showinfo(
+                "清理缓存",
+                "没有可清理的运行缓存。",
+                parent=self,
+            )
+            return
+
+        total_size = sum(directory_size(path) for path in run_dirs)
+        if not messagebox.askyesno(
+            "清理缓存",
+            f"将删除 {len(run_dirs)} 个运行缓存目录，"
+            f"预计释放 {self._format_size(total_size)}。\n\n"
+            "配置文件和点赞图型不会被删除。是否继续？",
+            parent=self,
+        ):
+            return
+
+        removed, skipped, freed_bytes = cleanup_artifacts(root)
+        if removed:
+            self._set_status("缓存已清理", COLORS["success"])
+            self._append_log(
+                f"已清理 {removed} 个运行缓存目录，"
+                f"释放 {self._format_size(freed_bytes)}。\n"
+            )
+        else:
+            self._set_status("清理失败", COLORS["coral"])
+        if skipped:
+            self._append_log(f"保留了 {skipped} 个非运行缓存项目。\n")
+        if removed:
+            messagebox.showinfo(
+                "清理完成",
+                f"已清理 {removed} 个运行缓存目录，"
+                f"释放 {self._format_size(freed_bytes)}。",
+                parent=self,
+            )
+        else:
+            messagebox.showwarning(
+                "清理失败",
+                "缓存文件可能正在被其他程序使用，请关闭后重试。",
+                parent=self,
+            )
+
+    @staticmethod
+    def _format_size(size: int) -> str:
+        value = float(size)
+        for unit in ("B", "KB", "MB", "GB"):
+            if value < 1024 or unit == "GB":
+                return f"{value:.0f} {unit}" if unit == "B" else f"{value:.1f} {unit}"
+            value /= 1024
+        return f"{value:.1f} GB"
 
     def _positive_int(self, value: str, label: str) -> int:
         try:

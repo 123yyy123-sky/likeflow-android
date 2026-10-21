@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -57,6 +58,26 @@ class LikeFlowSmokeTests(unittest.TestCase):
             self.assertNotIn("qq_like_test.py", command)
         finally:
             sys.argv = original
+
+    def test_cleanup_removes_only_generated_batches(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            batch = root / "20261021_153000" / "round_01"
+            batch.mkdir(parents=True)
+            (batch / "result.json").write_text("{}", encoding="utf-8")
+            keep_file = root / "notes.txt"
+            keep_file.write_text("keep", encoding="utf-8")
+            keep_dir = root / "my-export"
+            keep_dir.mkdir()
+
+            removed, skipped, freed_bytes = app.cleanup_artifacts(root)
+
+            self.assertEqual(removed, 1)
+            self.assertEqual(skipped, 2)
+            self.assertGreater(freed_bytes, 0)
+            self.assertFalse((root / "20261021_153000").exists())
+            self.assertTrue(keep_file.exists())
+            self.assertTrue(keep_dir.exists())
 
 
 if __name__ == "__main__":
