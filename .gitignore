@@ -1,0 +1,15 @@
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.idea/
+.vscode/
+artifacts/
+build/
+dist/
+work_window.xml
+like_icon.png
+.DS_Store
+Thumbs.db
+*.out.txt
+*.err.txt
